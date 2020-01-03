@@ -150,6 +150,7 @@ protected:
 	uint32_t m_insn_prefetch_depth;
 	uint32_t m_insn_prefetch_count;
 	uint32_t m_insn_prefetch_index;
+	bool m_insn_prefetch_valid[3];
 	uint32_t m_insn_prefetch_buffer[3];
 	uint32_t m_insn_prefetch_address[3];
 	const uint32_t m_prefetch_word0_shift;

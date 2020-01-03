@@ -85,6 +85,7 @@ arm7_cpu_device::arm7_cpu_device(const machine_config &mconfig, device_type type
 	// TODO[RH]: Default to 3-instruction prefetch for unknown ARM variants. Derived cores should set the appropriate value in their constructors.
 	m_insn_prefetch_depth = 3;
 
+	memset(m_insn_prefetch_valid, 0, sizeof(bool) * 3);
 	memset(m_insn_prefetch_buffer, 0, sizeof(uint32_t) * 3);
 	memset(m_insn_prefetch_address, 0, sizeof(uint32_t) * 3);
 	m_insn_prefetch_count = 0;
@@ -464,8 +465,6 @@ bool arm7_cpu_device::arm7_tlb_translate(offs_t &addr, int flags, bool no_except
 			else if (flags & ARM7_TLB_ABORT_P)
 			{
 				LOG( ( "ARM7: Section Table, Section %s fault on virtual address, vaddr = %08x, PC = %08x\n", (fault == FAULT_DOMAIN) ? "domain" : "permission", addr, m_r[eR15] ) );
-				m_pendingAbtP = true;
-				update_irq_state();
 			}
 			return false;
 		}
@@ -487,8 +486,6 @@ bool arm7_cpu_device::arm7_tlb_translate(offs_t &addr, int flags, bool no_except
 		else if (flags & ARM7_TLB_ABORT_P)
 		{
 			LOG( ( "ARM7: Translation fault on unmapped virtual address, PC = %08x, vaddr = %08x\n", m_r[eR15], addr ) );
-			m_pendingAbtP = true;
-			update_irq_state();
 		}
 		return false;
 	}
@@ -522,8 +519,6 @@ bool arm7_cpu_device::arm7_tlb_translate(offs_t &addr, int flags, bool no_except
 				else if (flags & ARM7_TLB_ABORT_P)
 				{
 					LOG( ( "ARM7: Translation fault on unmapped virtual address, vaddr = %08x, PC %08X\n", addr, m_r[eR15] ) );
-					m_pendingAbtP = true;
-					update_irq_state();
 				}
 				return false;
 			case COPRO_TLB_LARGE_PAGE:
@@ -561,8 +556,6 @@ bool arm7_cpu_device::arm7_tlb_translate(offs_t &addr, int flags, bool no_except
 						else if (flags & ARM7_TLB_ABORT_P)
 						{
 							LOG( ( "ARM7: Page Table, Section %s fault on virtual address, vaddr = %08x, PC = %08x\n", (fault == FAULT_DOMAIN) ? "domain" : "permission", addr, m_r[eR15] ) );
-							m_pendingAbtP = true;
-							update_irq_state();
 						}
 						return false;
 					}
@@ -623,6 +616,7 @@ void arm7_cpu_device::device_start()
 	save_item(NAME(m_insn_prefetch_depth));
 	save_item(NAME(m_insn_prefetch_count));
 	save_item(NAME(m_insn_prefetch_index));
+	save_item(NAME(m_insn_prefetch_valid));
 	save_item(NAME(m_insn_prefetch_buffer));
 	save_item(NAME(m_insn_prefetch_address));
 	save_item(NAME(m_r));
@@ -801,13 +795,17 @@ void arm7_cpu_device::update_insn_prefetch(uint32_t curr_pc)
 	for (uint32_t i = 0; i < to_fetch; i++)
 	{
 		uint32_t index = (i + start_index) % m_insn_prefetch_depth;
-		if ((m_control & COPRO_CTRL_MMU_EN) && !arm7_tlb_translate(pc, ARM7_TLB_ABORT_P | ARM7_TLB_READ, true))
+		uint32_t phys_pc = pc;
+		if ((m_control & COPRO_CTRL_MMU_EN) && !arm7_tlb_translate(phys_pc, ARM7_TLB_ABORT_P | ARM7_TLB_READ))
 		{
-			break;
+			m_insn_prefetch_valid[index] = false;
+			m_insn_prefetch_buffer[index] = 0xFFFFFFFF;
+		} else {
+			uint32_t op = m_pr32(phys_pc);
+			//printf("ipb[%d] <- %08x(%08x)\n", index, op, pc);
+			m_insn_prefetch_valid[index] = true;
+			m_insn_prefetch_buffer[index] = op;
 		}
-		uint32_t op = m_pr32(pc);
-		//printf("ipb[%d] <- %08x(%08x)\n", index, op, pc);
-		m_insn_prefetch_buffer[index] = op;
 		m_insn_prefetch_address[index] = pc;
 		m_insn_prefetch_count++;
 		pc += 4;
@@ -870,12 +868,11 @@ void arm7_cpu_device::execute_run()
 			// "In Thumb state, bit [0] is undefined and must be ignored. Bits [31:1] contain the PC."
 			raddr = pc & (~1);
 
-			if ( m_control & COPRO_CTRL_MMU_EN )
+			if ( !m_insn_prefetch_valid[m_insn_prefetch_index] )
 			{
-				if (!arm7_tlb_translate(raddr, ARM7_TLB_ABORT_P | ARM7_TLB_READ))
-				{
-					goto skip_exec;
-				}
+				m_pendingAbtP = true;
+				update_irq_state();
+				goto skip_exec;
 			}
 
 			insn = insn_fetch_thumb(raddr);
@@ -891,12 +888,11 @@ void arm7_cpu_device::execute_run()
 			// "In ARM state, bits [1:0] of r15 are undefined and must be ignored. Bits [31:2] contain the PC."
 			raddr = pc & (~3);
 
-			if ( m_control & COPRO_CTRL_MMU_EN )
+			if ( !m_insn_prefetch_valid[m_insn_prefetch_index] )
 			{
-				if (!arm7_tlb_translate(raddr, ARM7_TLB_ABORT_P | ARM7_TLB_READ))
-				{
-					goto skip_exec;
-				}
+				m_pendingAbtP = true;
+				update_irq_state();
+				goto skip_exec;
 			}
 
 #if 0
