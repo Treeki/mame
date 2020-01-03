@@ -10292,6 +10292,9 @@ clowndwn                        // Elwood Clown Roll Down
 @source:clpoker.cpp
 clpoker                         // Chain Leisure
 
+@source:clps711x.cpp
+osaris                          // 1999 Oregon Scientific Osaris
+
 @source:clshroad.cpp
 clshroad                        // (c) 1986 Wood Place Inc.
 clshroadd                       // (c) 1986 Wood Place Inc. (Data East license)

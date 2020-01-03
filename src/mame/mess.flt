@@ -157,6 +157,7 @@ cit220.cpp
 cking_master.cpp
 clcd.cpp
 clickstart.cpp
+clps711x.cpp
 clxvme186.cpp
 cm1800.cpp
 cmi.cpp

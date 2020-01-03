@@ -1105,6 +1105,7 @@ function linkProjects_mame_mess(_target, _subtarget)
 		"chromatics",
 		"chrysler",
 		"citoh",
+		"clps711x",
 		"coleco",
 		"compugraphic",
 		"cromemco",
@@ -1956,6 +1957,11 @@ files {
 	MAME_DIR .. "src/mame/machine/cit101_kbd.cpp",
 	MAME_DIR .. "src/mame/machine/cit101_kbd.h",
 	MAME_DIR .. "src/mame/drivers/cit220.cpp",
+}
+
+createMESSProjects(_target, _subtarget, "osaris")
+files {
+	MAME_DIR .. "src/mame/drivers/clps711x.cpp",
 }
 
 createMESSProjects(_target, _subtarget, "coleco")
