@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<mamelayout version="2">
+	<element name="Left Column">
+		<text string="Word"><bounds x="0" y="0" width="60" height="40" /></text>
+		<text string="Sheet"><bounds x="0" y="40" width="60" height="40" /></text>
+		<text string="Data"><bounds x="0" y="80" width="60" height="40" /></text>
+		<text string="Agenda"><bounds x="0" y="120" width="60" height="40" /></text>
+		<text string="Extras"><bounds x="0" y="160" width="60" height="40" /></text>
+	</element>
+	<element name="Right Column">
+		<text string="EPOC"><bounds x="0" y="0" width="60" height="40" /></text>
+		<text string="Menu"><bounds x="0" y="40" width="60" height="40" /></text>
+		<text string="Copy/Paste"><bounds x="0" y="80" width="60" height="40" /></text>
+		<text string="Zoom In"><bounds x="0" y="120" width="60" height="40" /></text>
+		<text string="Zoom Out"><bounds x="0" y="160" width="60" height="40" /></text>
+	</element>
+	<view name="Osaris PDA">
+		<bounds x="0" y="0" width="440" height="200" />
+		<element ref="Left Column"><bounds x="0" y="0" width="60" height="200" /></element>
+		<element ref="Right Column"><bounds x="380" y="0" width="60" height="200" /></element>
+		<screen index="0"><bounds x="60" y="0" width="320" height="200" /></screen>
+	</view>
+</mamelayout>

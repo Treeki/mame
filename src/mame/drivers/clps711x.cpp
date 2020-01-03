@@ -69,6 +69,7 @@ Oregon Scientific Osaris PDA:
 #include "emupal.h"
 #include "screen.h"
 #include "speaker.h"
+#include "osaris.lh"
 
 #define VERBOSE LOG_GENERAL
 #include "logmacro.h"
@@ -781,9 +782,9 @@ static INPUT_PORTS_START( osaris )
 	PORT_BIT(0x08, IP_ACTIVE_LOW, IPT_KEYBOARD) PORT_CODE(KEYCODE_LALT) // actually FUNC
 
 	PORT_START("PEN_X")
-	PORT_BIT(0xFFF, 0x000, IPT_LIGHTGUN_X) PORT_MINMAX(0x0000, 0xFFF) PORT_CROSSHAIR(X, 1, 0, 0) PORT_SENSITIVITY(100)
+	PORT_BIT(0xFFFF, 0x0000, IPT_LIGHTGUN_X) PORT_MINMAX(0x0000, 0xFFFF) PORT_CROSSHAIR(X, 1.375, -0.1875, 0) PORT_SENSITIVITY(100)
 	PORT_START("PEN_Y")
-	PORT_BIT(0xFFF, 0x000, IPT_LIGHTGUN_Y) PORT_MINMAX(0x0000, 0xFFF) PORT_CROSSHAIR(Y, 1, 0, 0) PORT_SENSITIVITY(100)
+	PORT_BIT(0xFFFF, 0x0000, IPT_LIGHTGUN_Y) PORT_MINMAX(0x0000, 0xFFFF) PORT_CROSSHAIR(Y, 1, 0, 0) PORT_SENSITIVITY(100)
 	PORT_START("PEN_DOWN")
 	PORT_BIT(1, IP_ACTIVE_HIGH, IPT_BUTTON1) PORT_CHANGED_MEMBER(DEVICE_SELF, clps711x_state, pen_down_changed, 0) PORT_CODE(MOUSECODE_BUTTON1)
 INPUT_PORTS_END
@@ -1067,10 +1068,10 @@ void clps711x_state::syncio_shift_clock()
 		LOGSYNCIO("SYNCIO returning channel %d on output %x\n", channel_id, m_spi_regs.output);
 		switch (channel_id)
 		{
-			case 0: m_spi_regs.input = ioport("PEN_Y")->read(); break;
+			case 0: m_spi_regs.input = 680 + (ioport("PEN_Y")->read() / 24.2); break;
 			// case 1: m_spi_regs.input = ioport("MAIN_BATTERY")->read(); break;
 			// case 2: m_spi_regs.input = ioport("REFERENCE")->read(); break;
-			case 4: m_spi_regs.input = ioport("PEN_X")->read(); break;
+			case 4: m_spi_regs.input = 305 + (ioport("PEN_X")->read() / 18.6); break;
 			// case 5: m_spi_regs.input = ioport("BACKUP_BATTERY")->read(); break;
 		}
 	}
@@ -1141,6 +1142,7 @@ void clps711x_state::osaris(machine_config &config)
 	SCREEN(config, m_screen, SCREEN_TYPE_LCD);
 	m_screen->set_raw(36'864'000 / 8, 320, 0, 320, 200, 0, 200);
 	m_screen->set_screen_update(FUNC(clps711x_state::screen_update));
+	config.set_default_layout(layout_osaris);
 
 	/* device PROM */
 	/* there are more unknown fields in here ... */
