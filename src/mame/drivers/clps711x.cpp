@@ -70,6 +70,7 @@ Oregon Scientific Osaris PDA:
 #include "screen.h"
 #include "speaker.h"
 
+#define VERBOSE LOG_GENERAL
 #include "logmacro.h"
 
 #define LOG_GPIO            (1U << 1)
@@ -77,15 +78,15 @@ Oregon Scientific Osaris PDA:
 #define LOG_REG_UNHANDLED   (1U << 3)
 #define LOG_PCMCIA          (1U << 4)
 #define LOG_TIMER           (1U << 5)
+#define LOG_SYNCIO          (1U << 6)
 
 #define LOGGPIO(...)            LOGMASKED(LOG_GPIO, __VA_ARGS__)
 #define LOGREG_VERBOSE(...)     LOGMASKED(LOG_REG_VERBOSE, __VA_ARGS__)
 #define LOGREG_UNHANDLED(...)   LOGMASKED(LOG_REG_UNHANDLED, __VA_ARGS__)
 #define LOGPCMCIA(...)          LOGMASKED(LOG_PCMCIA, __VA_ARGS__)
 #define LOGTIMER(...)           LOGMASKED(LOG_TIMER, __VA_ARGS__)
+#define LOGSYNCIO(...)          LOGMASKED(LOG_SYNCIO, __VA_ARGS__)
 
-#undef VERBOSE
-#define VERBOSE LOG_GENERAL
 
 // Interrupts
 #define CLPS711x_EXTFIQ 0
@@ -412,6 +413,30 @@ private:
 	// EEPROM
 	uint8_t m_eeprom_default_8[32];
 	uint16_t m_eeprom_default_16[16];
+
+
+	// SPI
+	// Osaris EPOC works with this in a real janky way: it ignores the SSEOTI
+	// interrupt and SSIBUSY flag in favour of just sending 12 transfer init
+	// requests and then reading what's in the register at the end
+	bool syncio_busy() const;
+	uint32_t syncio_adc_frequency() const;
+	uint32_t syncio_read();
+	void syncio_write(uint32_t data);
+	void syncio_shift_clock();
+
+	struct spi_regs_t {
+		uint16_t input;
+		uint8_t output;
+		uint32_t shifts_remaining;
+	};
+	spi_regs_t m_spi_regs;
+	emu_timer *m_spi_shift_timer;
+
+	// ADC/Touch Panel
+	// Currently built into the SPI but this will need to change!
+public:
+	DECLARE_INPUT_CHANGED_MEMBER(pen_down_changed);
 };
 
 READ32_MEMBER( clps711x_state::clps711x_reg_r )
@@ -442,6 +467,8 @@ READ32_MEMBER( clps711x_state::clps711x_reg_r )
 			return m_counter_timers[0]->remaining().as_ticks(counter_timer_frequency(0));
 		case CLPS711x_TC2D:
 			return m_counter_timers[1]->remaining().as_ticks(counter_timer_frequency(1));
+		case CLPS711x_SYNCIO:
+			return syncio_read();
 		case CLPS711x_PALLSW:
 			return m_lcd_config.palette & 0xFFFFFFFF;
 		case CLPS711x_PALMSW:
@@ -495,6 +522,9 @@ WRITE32_MEMBER( clps711x_state::clps711x_reg_w )
 		case CLPS711x_TC2D:
 			counter_timer_load(1, data);
 			return;
+		case CLPS711x_SYNCIO:
+			syncio_write(data);
+			return;
 		case CLPS711x_PALLSW:
 			m_lcd_config.palette &= 0xFFFFFFFF00000000;
 			m_lcd_config.palette |= data;
@@ -533,7 +563,10 @@ WRITE32_MEMBER( clps711x_state::clps7111_reg_w )
 
 uint32_t clps711x_state::get_sysflg() const
 {
-	return CLPS7111_SYSFLG_IS_7111;
+	uint32_t value = 0;
+	if (syncio_busy()) value |= CLPS711x_SYSFLG_SSIBUSY;
+	value |= CLPS7111_SYSFLG_IS_7111;
+	return value;
 }
 
 
@@ -746,13 +779,21 @@ static INPUT_PORTS_START( osaris )
 	PORT_BIT(0x02, IP_ACTIVE_LOW, IPT_KEYBOARD) PORT_CODE(KEYCODE_RSHIFT)
 	PORT_BIT(0x04, IP_ACTIVE_LOW, IPT_KEYBOARD) PORT_CODE(KEYCODE_LCONTROL)
 	PORT_BIT(0x08, IP_ACTIVE_LOW, IPT_KEYBOARD) PORT_CODE(KEYCODE_LALT) // actually FUNC
+
+	PORT_START("PEN_X")
+	PORT_BIT(0xFFF, 0x000, IPT_LIGHTGUN_X) PORT_MINMAX(0x0000, 0xFFF) PORT_CROSSHAIR(X, 1, 0, 0) PORT_SENSITIVITY(100)
+	PORT_START("PEN_Y")
+	PORT_BIT(0xFFF, 0x000, IPT_LIGHTGUN_Y) PORT_MINMAX(0x0000, 0xFFF) PORT_CROSSHAIR(Y, 1, 0, 0) PORT_SENSITIVITY(100)
+	PORT_START("PEN_DOWN")
+	PORT_BIT(1, IP_ACTIVE_HIGH, IPT_BUTTON1) PORT_CHANGED_MEMBER(DEVICE_SELF, clps711x_state, pen_down_changed, 0) PORT_CODE(MOUSECODE_BUTTON1)
 INPUT_PORTS_END
 
 
 enum {
 	CLPS711x_TIMER_TICK = 0,
 	CLPS711x_TIMER_TC1 = 1,
-	CLPS711x_TIMER_TC2 = 2
+	CLPS711x_TIMER_TC2 = 2,
+	CLPS711x_TIMER_SPI_SHIFT = 3
 };
 
 void clps711x_state::machine_start()
@@ -790,6 +831,11 @@ void clps711x_state::machine_start()
 	save_item(NAME(m_clps7600_regs.card_interface_timing_1B));
 	save_item(NAME(m_clps7600_regs.dma_control));
 	save_item(NAME(m_clps7600_regs.device_information));
+
+	save_item(NAME(m_spi_regs.input));
+	save_item(NAME(m_spi_regs.output));
+	save_item(NAME(m_spi_regs.shifts_remaining));
+	m_spi_shift_timer = timer_alloc(CLPS711x_TIMER_SPI_SHIFT);
 }
 
 void clps711x_state::machine_reset()
@@ -830,6 +876,11 @@ void clps711x_state::machine_reset()
 	m_lcd_config.pixel_prescale = 1;
 	m_lcd_config.palette = 0;
 	m_lcd_config.framebuffer_address = 0xC0000000;
+
+	m_spi_regs.input = 0;
+	m_spi_regs.output = 0;
+	m_spi_regs.shifts_remaining = 0;
+	m_spi_shift_timer->adjust(attotime::never);
 }
 
 void clps711x_state::device_timer(emu_timer &timer, device_timer_id id, int param, void *ptr)
@@ -869,6 +920,10 @@ void clps711x_state::device_timer(emu_timer &timer, device_timer_id id, int para
 		uint32_t count = (m_syscon & CLPS711x_SYSCON_TC2M) ? m_counter_reload[1] : 0xFFFF;
 		uint32_t freq = counter_timer_frequency(1);
 		timer.adjust(attotime::from_ticks(count, freq));
+	}
+	else if (id == CLPS711x_TIMER_SPI_SHIFT)
+	{
+		syncio_shift_clock();
 	}
 }
 
@@ -937,6 +992,107 @@ WRITE32_MEMBER( clps711x_state::clps7600_reg_w )
 		case 0x4000: m_clps7600_regs.dma_control = data; break;
 		case 0x4400: m_clps7600_regs.device_information = data; break;
 	}
+}
+
+
+bool clps711x_state::syncio_busy() const
+{
+	return (m_spi_regs.shifts_remaining > 0);
+}
+
+uint32_t clps711x_state::syncio_adc_frequency() const
+{
+	// TODO: in 13MHz mode on CL-PS7111, this
+	// should return 4.2, 16.9, 67.7, 135.4 KHz
+	uint8_t adcksel = (m_syscon & CLPS711x_SYSCON_ADCKSEL_MASK) >> CLPS711x_SYSCON_ADCKSEL_SHIFT;
+	switch (adcksel)
+	{
+		case 0: return 4'000;
+		case 1: return 16'000;
+		case 2: return 64'000;
+		case 3: return 128'000;
+	}
+	return 0; // should never happen
+}
+
+uint32_t clps711x_state::syncio_read()
+{
+	LOGSYNCIO("clps711x@%s: reading from SYNCIO\n", m_cpu->local_time().as_string());
+	set_interrupt_state(CLPS711x_SSEOTI, false);
+	return m_spi_regs.input;
+}
+
+void clps711x_state::syncio_write(uint32_t data)
+{
+	uint8_t config_byte = (data & CLPS711x_SYNCIO_CONFIG_MASK) >> CLPS711x_SYNCIO_CONFIG_SHIFT;
+	uint8_t frame_length = (data & CLPS711x_SYNCIO_FRAMELEN_MASK) >> CLPS711x_SYNCIO_FRAMELEN_SHIFT;
+	bool smplck_enable = data & CLPS711x_SYNCIO_SMCKEN;
+	bool transfer_start = data & CLPS711x_SYNCIO_TXFRMEN;
+
+	uint32_t adcclk_freq = syncio_adc_frequency();
+	uint32_t smpclk_freq = adcclk_freq * 2;
+
+	LOGSYNCIO(
+		"clps711x@%s: configuring SYNCIO: adcclk_freq:%uHz transfer_start:%s sample_clock:%s(%uHz) frame_length:%d config_byte:%08x\n",
+		m_cpu->local_time().as_string(),
+		adcclk_freq,
+		transfer_start ? "enabled" : "disabled",
+		smplck_enable ? "enabled" : "disabled",
+		smpclk_freq,
+		frame_length, config_byte
+		);
+
+	m_spi_shift_timer->adjust(attotime::from_hz(adcclk_freq));
+	m_spi_regs.output = config_byte;
+	m_spi_regs.shifts_remaining = frame_length;
+	if (smplck_enable)
+		LOGSYNCIO("clps711x SYNCIO warning: sample clock not implemented\n");
+}
+
+
+void clps711x_state::syncio_shift_clock()
+{
+	uint8_t bit = (m_spi_regs.output & 0x80) >> 7;
+	m_spi_regs.output <<= 1;
+	LOGSYNCIO(
+		"clps711x@%s: SYNCIO output bit: %d\n",
+		m_cpu->local_time().as_string(), bit);
+
+	// start ADC hackery
+	// once we know how the ADC actually works, it would be nice to
+	// implement this properly. for now, we must fake it...
+	if (m_spi_regs.shifts_remaining == 16)
+	{
+		uint8_t channel_id = m_spi_regs.output >> 5;
+		LOGSYNCIO("SYNCIO returning channel %d on output %x\n", channel_id, m_spi_regs.output);
+		switch (channel_id)
+		{
+			case 0: m_spi_regs.input = ioport("PEN_Y")->read(); break;
+			// case 1: m_spi_regs.input = ioport("MAIN_BATTERY")->read(); break;
+			// case 2: m_spi_regs.input = ioport("REFERENCE")->read(); break;
+			case 4: m_spi_regs.input = ioport("PEN_X")->read(); break;
+			// case 5: m_spi_regs.input = ioport("BACKUP_BATTERY")->read(); break;
+		}
+	}
+	// end ADC hackery
+
+	m_spi_regs.shifts_remaining--;
+	if (m_spi_regs.shifts_remaining == 0)
+	{
+		LOGSYNCIO("clps711x SYNCIO complete, asserting SSEOTI\n");
+		set_interrupt_state(CLPS711x_SSEOTI, true);
+	}
+	else
+	{
+		m_spi_shift_timer->adjust(attotime::from_hz(syncio_adc_frequency()));
+	}
+	
+}
+
+
+INPUT_CHANGED_MEMBER(clps711x_state::pen_down_changed)
+{
+	set_interrupt_state(CLPS711x_EINT2, newval);
 }
 
 
