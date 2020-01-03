@@ -52,12 +52,20 @@ CL-PS7111 Memory Map:
 - D0000000..DFFFFFFF : DRAM Bank 1
 - E0000000..FFFFFFFF : Unmapped
 
+Oregon Scientific Osaris PDA:
+- CL-PS7111 SoC
+- 4MB or 8MB RAM
+- CL-PS7600 PCMCIA chip
+- MAX3243CAI(?) RS-232 chip
+- Unknown ADC
+
 ***************************************************************************/
 
 
 #include "emu.h"
 #include "cpu/arm7/arm7.h"
 #include "cpu/arm7/arm7core.h"
+#include "machine/eepromser.h"
 #include "emupal.h"
 #include "screen.h"
 #include "speaker.h"
@@ -286,6 +294,11 @@ static const uint32_t TIMER_FREQ_1 = 512'000;
 #define GPIO_KEYBOARD_EXTRA_MASK  0x0000F000
 #define GPIO_KEYBOARD_EXTRA_SHIFT 12
 
+#define GPIO_EEPROM_DATA_OUT      0x00000080
+#define GPIO_EEPROM_CLK           0x00000400
+#define GPIO_EEPROM_CS            0x00000800
+#define GPIO_EEPROM_DATA_IN       0x40000000
+
 
 class clps711x_state : public driver_device
 {
@@ -294,6 +307,7 @@ public:
 		: driver_device(mconfig, type, tag)
 		, m_cpu(*this, "cpu")
 		, m_screen(*this, "screen")
+		, m_eeprom(*this, "eeprom")
 	{
 	}
 
@@ -330,6 +344,7 @@ private:
 	// devices
 	required_device<cpu_device> m_cpu;
 	required_device<screen_device> m_screen;
+	required_device<eeprom_serial_93cxx_device> m_eeprom;
 
 	// port states
 	// uint32_t m_abcd_values;
@@ -392,6 +407,11 @@ private:
 		uint32_t device_information;
 	};
 	clps7600_regs_t m_clps7600_regs;
+
+
+	// EEPROM
+	uint8_t m_eeprom_default_8[32];
+	uint16_t m_eeprom_default_16[16];
 };
 
 READ32_MEMBER( clps711x_state::clps711x_reg_r )
@@ -544,6 +564,9 @@ uint32_t clps711x_state::gpio_abcd_read_pins( uint32_t mask )
 		value |= ((ioport("KEYEXTRA")->read() << GPIO_KEYBOARD_EXTRA_SHIFT) & GPIO_KEYBOARD_EXTRA_MASK);
 	}
 
+	if ((mask & GPIO_EEPROM_DATA_OUT) && m_eeprom->do_read())
+		value |= GPIO_EEPROM_DATA_OUT;
+
 	return value & mask;
 }
 uint32_t clps711x_state::gpio_e_read_pins( uint32_t mask )
@@ -554,6 +577,13 @@ uint32_t clps711x_state::gpio_e_read_pins( uint32_t mask )
 void clps711x_state::gpio_abcd_write_pins( uint32_t mask, uint32_t pins )
 {
 	LOGGPIO("gpio_abcd_write_pins: %s: GPIO pins %08x => %08x\n", machine().describe_context(), mask, pins);
+
+	if (mask & GPIO_EEPROM_CS)
+		m_eeprom->cs_write((pins & GPIO_EEPROM_CS) ? ASSERT_LINE : CLEAR_LINE);
+	if (mask & GPIO_EEPROM_CLK)
+		m_eeprom->clk_write((pins & GPIO_EEPROM_CLK) ? ASSERT_LINE : CLEAR_LINE);
+	if (mask & GPIO_EEPROM_DATA_IN)
+		m_eeprom->di_write((pins & GPIO_EEPROM_DATA_IN) ? ASSERT_LINE : CLEAR_LINE);
 }
 void clps711x_state::gpio_e_write_pins( uint32_t mask, uint32_t pins )
 {
@@ -951,11 +981,29 @@ void clps711x_state::osaris(machine_config &config)
 	ARM710A(config, m_cpu, MAIN_CLOCK);
 	m_cpu->set_addrmap(AS_PROGRAM, &clps711x_state::osaris_map);
 
-	/* video hardware */
-	screen_device &screen(SCREEN(config, "screen", SCREEN_TYPE_LCD));
-	// default settings from Osaris ROM
-	screen.set_raw(36'864'000 / 8, 320, 0, 320, 200, 0, 200);
-	screen.set_screen_update(FUNC(clps711x_state::screen_update));
+	/* video hardware - default settings from Osaris ROM */
+	SCREEN(config, m_screen, SCREEN_TYPE_LCD);
+	m_screen->set_raw(36'864'000 / 8, 320, 0, 320, 200, 0, 200);
+	m_screen->set_screen_update(FUNC(clps711x_state::screen_update));
+
+	/* device PROM */
+	/* there are more unknown fields in here ... */
+	memset(m_eeprom_default_8, 0, sizeof(m_eeprom_default_8));
+	m_eeprom_default_8[0x18] = 0x44;
+	m_eeprom_default_8[0x19] = 0x33;
+	m_eeprom_default_8[0x1A] = 0x22;
+	m_eeprom_default_8[0x1B] = 0x11;
+	uint8_t eeprom_checksum = 0;
+	for (int i = 0; i < 0x1F; i++)
+		eeprom_checksum ^= m_eeprom_default_8[i];
+	m_eeprom_default_8[0x1F] = eeprom_checksum ^ 0x42;
+
+	for (int i = 0; i < 0x10; i++)
+		m_eeprom_default_16[i] = m_eeprom_default_8[i * 2] | (m_eeprom_default_8[i * 2 + 1] << 8);
+
+	/* exact chip ID not confimed, but reading seems 93C06-compatible */
+	EEPROM_93C06_16BIT(config, m_eeprom);
+	m_eeprom->default_data(m_eeprom_default_16, 32);
 
 	/* sound hardware */
 	SPEAKER(config, "mono").front_center();
